@@ -1,4 +1,5 @@
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::backtrace::Backtrace;
 use std::cell::Cell;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,15 +14,15 @@ pub struct LoggingAllocator<A = System> {
 }
 
 impl LoggingAllocator<System> {
-    pub const fn new() -> Self {
-        LoggingAllocator::with_allocator(System)
+    pub const fn new(enabled: bool) -> Self {
+        LoggingAllocator::with_allocator(System, enabled)
     }
 }
 
 impl<A> LoggingAllocator<A> {
-    pub const fn with_allocator(allocator: A) -> Self {
+    pub const fn with_allocator(allocator: A, enabled: bool) -> Self {
         LoggingAllocator {
-            enabled: AtomicBool::new(false),
+            enabled: AtomicBool::new(enabled),
             allocator,
         }
     }
@@ -64,13 +65,13 @@ where
         #[cfg(feature = "warn")]
         {
             if layout.size() > WARNING_THRESHOLD {
-                log::warn!("large allocation at {:?}", backtrace::Backtrace::new());
+                eprintln!("large allocation at {:?}", backtrace::Backtrace::new());
             }
         }
         let ptr = self.allocator.alloc(layout);
         if self.logging_enabled() {
             run_guarded(|| {
-                log::trace!("alloc {}", Fmt(ptr, layout.size(), layout.align()));
+                eprintln!("alloc {}", Fmt(ptr, layout.size(), layout.align(), true));
             });
         }
         ptr
@@ -79,7 +80,7 @@ where
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         self.allocator.dealloc(ptr, layout);
         if self.logging_enabled() {
-            run_guarded(|| log::trace!("dealloc {}", Fmt(ptr, layout.size(), layout.align()),));
+            run_guarded(|| eprintln!("dealloc {}", Fmt(ptr, layout.size(), layout.align(), true),));
         }
     }
 
@@ -87,7 +88,7 @@ where
         let ptr = self.allocator.alloc_zeroed(layout);
         if self.logging_enabled() {
             run_guarded(|| {
-                log::trace!("alloc_zeroed {}", Fmt(ptr, layout.size(), layout.align()));
+                eprintln!("alloc_zeroed {}", Fmt(ptr, layout.size(), layout.align(), true));
             });
         }
         ptr
@@ -97,16 +98,16 @@ where
         #[cfg(feature = "warn")]
         {
             if new_size > WARNING_THRESHOLD {
-                log::warn!("large reallocation at {:?}", backtrace::Backtrace::new());
+                eprintln!("large reallocation at {:?}", backtrace::Backtrace::new());
             }
         }
         let new_ptr = self.allocator.realloc(ptr, layout, new_size);
         if self.logging_enabled() {
             run_guarded(|| {
-                log::trace!(
+                eprintln!(
                     "realloc {} to {}",
-                    Fmt(ptr, layout.size(), layout.align()),
-                    Fmt(new_ptr, new_size, layout.align())
+                    Fmt(ptr, layout.size(), layout.align(), false),
+                    Fmt(new_ptr, new_size, layout.align(), true)
                 );
             });
         }
@@ -114,14 +115,22 @@ where
     }
 }
 
-struct Fmt(*mut u8, usize, usize);
+struct Fmt(*mut u8, usize, usize, bool);
 
 impl fmt::Display for Fmt {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "[address={:p}, size={}, align={}]",
-            self.0, self.1, self.2
-        )
+        if self.3 {
+            write!(
+                f,
+                "[address={:p}, size={}, align={}] at:\n{:}",
+                self.0, self.1, self.2, Backtrace::capture()
+            )
+        } else {
+            write!(
+                f,
+                "[address={:p}, size={}, align={}]",
+                self.0, self.1, self.2
+            )
+        }
     }
 }
